@@ -1,0 +1,7 @@
+{
+  "name": "docListNavigator",
+  "version": "1.0.5",
+  "downloadUrl": "https://github.com/strugo10/docListNavigator/releases/latest/download/docListNavigator.nvda-addon",
+  "changelog": "Wersja 1.0.5:\n• Poprawki gramatyczne i detekcji rzymskich cyfr: ochrona polskiego spójnika 'i' oraz wsparcie dla znaków 'X' i 'L'.\n• Precyzyjne odczytywanie numerów rozdziałów.\n• Stabilna nawigacja i skakanie po akapitach w dokumentach PDF w Adobe Acrobat Reader.\n• Wyższa wydajność w Microsoft Word dzięki optymalizacji odświeżania bufora akapitów.\n• Wyeliminowanie przechwytywania skrótów poza Wordem i Acrobatem.\n• Zrównoważony dźwięk stereo w sygnalizacji poziomów nawigacji.",
+  "minNVDAVersion": "2024.1.0"
+}
