@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 import time
 import json
 import threading
@@ -31,8 +30,9 @@ from logHandler import log
 CONFIG_SECTION = "docListNavigator"
 ADDON_NAME = "docListNavigator"
 ADDON_TITLE = "Nawigator list i cyfr rzymskich"
-ADDON_VERSION = "1.0.5"
+ADDON_VERSION = "1.0.7"
 ADDON_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_UPDATE_SOURCE_URL = "https://raw.githubusercontent.com/strugo10/docListNavigator/main/update_info.json"
 
 confspec = {
 	"enableRomanNumerals": "boolean(default=True)",
@@ -42,7 +42,7 @@ confspec = {
 	"soundVolume": "integer(default=80, min=0, max=100)",
 	"enableHierarchyPath": "boolean(default=True)",
 	"autoCheckUpdates": "boolean(default=True)",
-	"updateSourceUrl": r"string(default='G:\Mój dysk\Antigravity\Nvda dodatki\updates.json')",
+	"updateSourceUrl": f"string(default='{DEFAULT_UPDATE_SOURCE_URL}')",
 	"lastUpdateCheckTime": "float(default=0.0)",
 }
 config.conf.spec[CONFIG_SECTION] = confspec
@@ -255,6 +255,18 @@ RE_TIRET = re.compile(r'^(?:[-–—•*]\s*)', re.IGNORECASE)
 RE_SUBTIRET = re.compile(r'^(?:[-–—]{2}\s*)', re.IGNORECASE)
 
 
+def _index_to_letters(idx: int) -> str:
+	"""Zamienia indeks 0-bazowy na sekwencję liter: 0->a, 25->z, 26->aa, 27->ab."""
+	if idx < 0:
+		return "a"
+	result = []
+	n = idx + 1
+	while n > 0:
+		n, rem = divmod(n - 1, 26)
+		result.append(chr(ord('a') + rem))
+	return "".join(reversed(result))
+
+
 def classify_paragraph(
 	text: str,
 	left_indent_pt: float = 0.0,
@@ -273,6 +285,13 @@ def classify_paragraph(
 	raw_clean = (text or "").strip()
 	cand = f"{list_string} {raw_clean}".strip() if list_string else raw_clean
 
+	is_obszar = bool(RE_OBSZAR.match(cand))
+	is_zadanie = bool(RE_ZADANIE.match(cand))
+	is_modul = bool(RE_MODUL.match(cand))
+
+	base_lvl = LogicalLevel.BODY
+	base_marker = ""
+
 	# 1. Poziom 0: Rozdział (np. Rozdział IV, IV. Struktura programu)
 	if outline_level == 1 or RE_ROZDZIAL.match(cand):
 		m = RE_ROZDZIAL.match(cand)
@@ -288,79 +307,105 @@ def classify_paragraph(
 				marker = f"Rozdział: {marker}"
 		return LogicalLevel.ROZDZIAL, marker
 
-	# 2. Poziom 1: Ustęp (np. ustęp 1., 1., Moduł I)
-	if RE_MODUL.match(cand) or RE_USTEP.match(cand) or (outline_level == 2 and not RE_OBSZAR.match(cand) and not RE_PUNKT.match(cand)):
-		m_mod = RE_MODUL.match(cand)
-		if m_mod:
+	# 2. Poziom 1: Ustęp (np. ustęp 1., 1., Moduł I) — z priorytetem dla Obszaru i Zadania (R12)
+	if (is_modul or (RE_USTEP.match(cand) and not is_obszar and not is_zadanie) or (outline_level == 2 and not is_obszar and not is_zadanie and not RE_PUNKT.match(cand))):
+		if is_modul:
 			m_num = re.search(r'\b(?:modu[łl][a-z]*\s+([IVXLCDM\d]+))', cand, re.IGNORECASE)
 			if m_num:
 				v = m_num.group(1).upper()
 				int_v = roman_to_int(v) if v in MULTI_ROMANS or v == 'I' else v
-				return LogicalLevel.USTEP, f"ustęp {int_v}."
-			return LogicalLevel.USTEP, "ustęp"
-
-		m_ust = RE_USTEP.match(cand)
-		if m_ust:
-			m_num = re.search(r'\b(?:art(?:yku[łl])?\.?|§|ust(?:[ęe]p)?\.?)\s*(\d+[a-z]?)|(\d+[a-z]?)\.', cand, re.IGNORECASE)
+				base_lvl, base_marker = LogicalLevel.USTEP, f"ustęp {int_v}."
+			else:
+				base_lvl, base_marker = LogicalLevel.USTEP, "ustęp"
+		elif RE_USTEP.match(cand):
+			m_num = re.search(r'(?:(?:\b(?:art(?:yku[łl])?\.?|ust(?:[ęe]p)?\.?)|§)\s*(\d+[a-z]?)|^(\d+[a-z]?)\.)', cand, re.IGNORECASE)
 			if m_num:
 				num_v = m_num.group(1) or m_num.group(2)
-				return LogicalLevel.USTEP, f"ustęp {num_v}."
-			return LogicalLevel.USTEP, "ustęp"
+				base_lvl, base_marker = LogicalLevel.USTEP, f"ustęp {num_v}."
+			else:
+				base_lvl, base_marker = LogicalLevel.USTEP, "ustęp"
+		else:
+			base_lvl, base_marker = LogicalLevel.USTEP, "ustęp"
 
-		return LogicalLevel.USTEP, "ustęp"
-
-	# 3. Poziom 2: Punkt (np. pkt 1), 1), Obszar A)
-	if RE_OBSZAR.match(cand) or RE_PUNKT.match(cand) or (outline_level == 3 and not RE_ZADANIE.match(cand) and not RE_LITERA.match(cand)):
-		m_obs = RE_OBSZAR.match(cand)
-		if m_obs:
+	# 3. Poziom 2: Punkt (np. pkt 1), 1), Obszar A) — z priorytetem dla Zadania (R12)
+	elif (is_obszar or (RE_PUNKT.match(cand) and not is_zadanie) or (outline_level == 3 and not is_zadanie and not RE_LITERA.match(cand))):
+		if is_obszar:
 			m_let = re.search(r'\bobszar(?:ze)?\s+([A-ZĄĆĘŁŃÓŚŹŻ\d])', cand, re.IGNORECASE)
 			if m_let:
 				ch_char = m_let.group(1).upper()
 				if 'A' <= ch_char <= 'Z':
 					num_from_letter = ord(ch_char) - ord('A') + 1
-					return LogicalLevel.PUNKT, f"pkt {num_from_letter})"
-				return LogicalLevel.PUNKT, f"pkt {ch_char})"
-			return LogicalLevel.PUNKT, "pkt"
-
-		m_pkt = RE_PUNKT.match(cand)
-		if m_pkt:
+					base_lvl, base_marker = LogicalLevel.PUNKT, f"pkt {num_from_letter})"
+				else:
+					base_lvl, base_marker = LogicalLevel.PUNKT, f"pkt {ch_char})"
+			else:
+				base_lvl, base_marker = LogicalLevel.PUNKT, "pkt"
+		elif RE_PUNKT.match(cand):
 			m_num = re.search(r'(?:(?:pkt|punkt)\s*(\d+[a-z]?)|(\d+[a-z]?)\))', cand, re.IGNORECASE)
 			if m_num:
 				val = m_num.group(1) or m_num.group(2)
-				return LogicalLevel.PUNKT, f"pkt {val})"
-			return LogicalLevel.PUNKT, "pkt"
+				base_lvl, base_marker = LogicalLevel.PUNKT, f"pkt {val})"
+			else:
+				base_lvl, base_marker = LogicalLevel.PUNKT, "pkt"
+		else:
+			base_lvl, base_marker = LogicalLevel.PUNKT, "pkt"
 
-		return LogicalLevel.PUNKT, "pkt"
-
-	# 4. Poziom 3: Litera (np. litera a), a), Zadanie 1)
-	if RE_ZADANIE.match(cand) or RE_LITERA.match(cand):
-		m_let = re.search(r'(?:^|[^\w])([a-z]{1,2})\)', cand, re.IGNORECASE)
-		if m_let:
-			return LogicalLevel.LITERA, f"litera {m_let.group(1).lower()})"
-		return LogicalLevel.LITERA, "litera"
+	# 4. Poziom 3: Litera (np. litera a), lit. c., a), Zadanie 1)
+	elif is_zadanie or RE_LITERA.match(cand):
+		if is_zadanie:
+			m_let_pref = re.match(r'^(?:(?:lit(?:era)?\.?)\s*([a-z]{1,2})[.)]?|([a-z]{1,2})\))\s+', cand, re.IGNORECASE)
+			if m_let_pref:
+				let_v = (m_let_pref.group(1) or m_let_pref.group(2) or "").lower()
+				base_lvl, base_marker = LogicalLevel.LITERA, f"litera {let_v})"
+			else:
+				base_lvl, base_marker = LogicalLevel.LITERA, "litera"
+		else:
+			m_let = re.match(r'^(?:(?:lit(?:era)?\.?)\s*([a-z]{1,2})[.)]?|([a-z]{1,2})\))', cand, re.IGNORECASE)
+			if m_let:
+				let_v = (m_let.group(1) or m_let.group(2) or "").lower()
+				base_lvl, base_marker = LogicalLevel.LITERA, f"litera {let_v})"
+			else:
+				base_lvl, base_marker = LogicalLevel.LITERA, "litera"
 
 	# 5. Poziom 5: Podwójny tiret
-	m = RE_SUBTIRET.match(cand)
-	if m:
-		return LogicalLevel.SUBTIRET, "podwójne tiret"
+	elif RE_SUBTIRET.match(cand):
+		base_lvl, base_marker = LogicalLevel.SUBTIRET, "podwójne tiret"
 
 	# 6. Poziom 4: Tiret / Wypunktowanie
-	m = RE_TIRET.match(cand)
-	if m:
-		return LogicalLevel.TIRET, "tiret"
+	elif RE_TIRET.match(cand):
+		base_lvl, base_marker = LogicalLevel.TIRET, "tiret"
 
-	# 7. Formatowanie listy Worda (ListType > 0)
+	# 7. Formatowanie natywnej listy Worda oraz uwzględnienie zagnieżdżenia (R22)
 	if list_type > 0:
-		if list_type == 2:  # wdListBullet
+		if list_type == 2 or base_lvl in (LogicalLevel.TIRET, LogicalLevel.SUBTIRET):
+			if list_level >= 2:
+				return LogicalLevel.SUBTIRET, "podwójne tiret"
 			return LogicalLevel.TIRET, "tiret"
-		if list_level == 1:
-			return LogicalLevel.USTEP, f"ustęp {list_string or '1.'}"
-		elif list_level == 2:
-			return LogicalLevel.PUNKT, f"pkt {list_string or '1)'}"
-		elif list_level == 3:
-			return LogicalLevel.LITERA, f"litera {list_string or 'a)'}"
-		elif list_level >= 4:
-			return LogicalLevel.TIRET, "tiret"
+		if base_lvl == LogicalLevel.BODY:
+			if list_level <= 1:
+				return LogicalLevel.USTEP, f"ustęp {list_string or '1.'}"
+			elif list_level == 2:
+				return LogicalLevel.PUNKT, f"pkt {list_string or '1)'}"
+			elif list_level == 3:
+				return LogicalLevel.LITERA, f"litera {list_string or 'a)'}"
+			elif list_level == 4:
+				return LogicalLevel.TIRET, "tiret"
+			else:
+				return LogicalLevel.SUBTIRET, "podwójne tiret"
+		elif list_level >= 2 and base_lvl < list_level:
+			# Zagnieżdżona lista numerowana Worda (np. '1.' na poziomie 2 pod '1.' na poziomie 1)
+			raw_tok = re.sub(r'[.)\s]+$', '', (list_string or "")).strip()
+			if list_level == 2:
+				return LogicalLevel.PUNKT, f"pkt {raw_tok})" if raw_tok else "pkt"
+			elif list_level == 3:
+				return LogicalLevel.LITERA, f"litera {raw_tok.lower()})" if raw_tok else "litera"
+			elif list_level == 4:
+				return LogicalLevel.TIRET, "tiret"
+			else:
+				return LogicalLevel.SUBTIRET, "podwójne tiret"
+
+	if base_lvl != LogicalLevel.BODY:
+		return base_lvl, base_marker
 
 	# 8. Fallback na wcięcia akapitowe
 	if left_indent_pt >= 70:
@@ -380,7 +425,7 @@ def classify_paragraph(
 # ==============================================================================
 
 class DocumentItem:
-	def __init__(self, index: int, text: str, level: int, marker: str, raw_obj=None, range_start: int = -1, range_end: int = -1, app_source: str = "word"):
+	def __init__(self, index: int, text: str, level: int, marker: str, raw_obj=None, range_start: int = -1, range_end: int = -1, app_source: str = "word", list_level: int = -1):
 		self.index = index
 		self.text = text.strip()
 		self.level = level
@@ -389,6 +434,7 @@ class DocumentItem:
 		self.range_start = range_start
 		self.range_end = range_end
 		self.app_source = app_source
+		self.list_level = list_level
 		self.parent_index = -1
 		self.children_indices = []
 		self.sibling_index = 1
@@ -645,19 +691,31 @@ class AddonUpdaterEngine:
 		self.current_version = current_version
 		self.addon_dir = addon_dir
 		self.config_section = config_section
+		self.override_source_url = ""
 
 	def get_candidate_sources(self) -> list[str]:
 		sources = []
+		override_url = (getattr(self, "override_source_url", "") or "").strip()
+		if override_url:
+			sources.append(override_url)
 		conf = config.conf.get(self.config_section, {})
 		custom_url = (conf.get("updateSourceUrl", "") or "").strip()
 		if custom_url:
 			sources.append(custom_url)
 
+		sources.append(DEFAULT_UPDATE_SOURCE_URL)
+		if self.addon_dir:
+			sources.append(os.path.join(self.addon_dir, "update_info.json"))
+
 		sources.extend([
 			r"G:\Mój dysk\Antigravity\Nvda dodatki\updates.json",
 			r"C:\Antigravity\Nvda dodatki\updates.json",
 		])
-		return [s for s in sources if s]
+		deduped = []
+		for s in sources:
+			if s and s not in deduped:
+				deduped.append(s)
+		return deduped
 
 	def fetch_manifest(self) -> tuple[dict | None, str | None]:
 		sources = self.get_candidate_sources()
@@ -740,7 +798,7 @@ class AddonUpdaterEngine:
 				wx.CallAfter(_show_dialog)
 			else:
 				if manual:
-					msg = f"Posiadasz najnowszą wersję dodatku {self.addon_title} ({self.current_version}).\nBrak nowszych aktualizacji na Twoim dysku."
+					msg = f"Posiadasz najnowszą wersję dodatku {self.addon_title} ({self.current_version}).\nBrak nowszych aktualizacji."
 					wx.CallAfter(gui.messageBox, msg, f"Aktualizacje: {self.addon_title}", wx.OK | wx.ICON_INFORMATION)
 		except Exception as ex:
 			if manual:
@@ -751,56 +809,92 @@ class AddonUpdaterEngine:
 		t.start()
 
 	def _worker_download_install(self, download_url: str):
-		import addonHandler
-
-		ui.message(f"Pobieranie aktualizacji dla {self.addon_title}...")
 		target_pkg = None
-
 		try:
-			if download_url.startswith("http://") or download_url.startswith("https://"):
-				req = urllib.request.Request(download_url, headers={"User-Agent": "NVDA-Addon-Updater/1.0"})
-				tmp_file = os.path.join(tempfile.gettempdir(), f"{self.addon_name}_update.nvda-addon")
+			import addonHandler
+			wx.CallAfter(ui.message, f"Pobieranie aktualizacji dla {self.addon_title}...")
+
+			dl_clean = (download_url or "").strip()
+			if not dl_clean:
+				raise ValueError("Brak adresu pakietu instalacyjnego w pliku ogłoszeniowym.")
+
+			if dl_clean.startswith("http://") or dl_clean.startswith("https://"):
+				req = urllib.request.Request(dl_clean, headers={"User-Agent": "NVDA-Addon-Updater/1.0"})
+				tmp_file = os.path.join(tempfile.gettempdir(), f"{self.addon_name}_update_{os.getpid()}.nvda-addon")
 				with urllib.request.urlopen(req, timeout=30) as resp, open(tmp_file, "wb") as out:
 					shutil.copyfileobj(resp, out)
 				target_pkg = tmp_file
 			else:
-				candidates = [download_url]
+				if not dl_clean.lower().endswith(".nvda-addon"):
+					raise ValueError(f"Odrzucono plik spoza formatu pakietu dodatku NVDA (.nvda-addon): {dl_clean}")
+				candidates = [dl_clean]
 				candidates.extend([
 					os.path.join(r"G:\Mój dysk\Antigravity\Nvda dodatki\Pakiety_Instalacyjne", f"{self.addon_name}.nvda-addon"),
 					os.path.join(r"C:\Antigravity\Nvda dodatki\Pakiety_Instalacyjne", f"{self.addon_name}.nvda-addon"),
 				])
 				for cand in candidates:
-					if cand and os.path.isfile(cand):
+					if cand and cand.lower().endswith(".nvda-addon") and os.path.isfile(cand):
 						target_pkg = cand
 						break
 
-			if not target_pkg or not os.path.isfile(target_pkg):
-				raise FileNotFoundError(f"Nie znaleziono pliku instalacyjnego dodatku:\n{download_url}")
+			if not target_pkg or not target_pkg.lower().endswith(".nvda-addon") or not os.path.isfile(target_pkg):
+				raise FileNotFoundError(f"Nie znaleziono prawidłowego pliku instalacyjnego dodatku (.nvda-addon):\n{download_url}")
+
+			if not hasattr(addonHandler, "AddonBundle") or not hasattr(addonHandler, "installAddonBundle"):
+				raise RuntimeError("Bieżąca instancja NVDA nie udostępnia API instalacji pakietów addonHandler.")
+
+			bundle = addonHandler.AddonBundle(target_pkg)
+			bundle_name = (bundle.manifest.get("name") or "").strip()
+			if bundle_name != self.addon_name:
+				raise ValueError(f"Niezgodna nazwa dodatku w pakiecie: oczekiwano '{self.addon_name}', otrzymano '{bundle_name}'.")
 
 			def _do_install():
 				try:
-					if hasattr(addonHandler, "installAddonPackage"):
-						try:
-							bundle = addonHandler.AddonBundle(target_pkg)
-							addonHandler.installAddonPackage(bundle)
+					try:
+						from addonHandler import addonVersionCheck
+						if hasattr(addonVersionCheck, "isAddonCompatible") and not addonVersionCheck.isAddonCompatible(bundle):
+							gui.messageBox(
+								f"Pakiet aktualizacji dodatku {self.addon_title} nie jest zgodny z bieżącą wersją NVDA.",
+								f"Niezgodna wersja: {self.addon_title}",
+								wx.OK | wx.ICON_ERROR
+							)
 							return
-						except TypeError:
-							addonHandler.installAddonPackage(target_pkg)
-							return
-					elif hasattr(addonHandler, "installAddon"):
-						bundle = addonHandler.AddonBundle(target_pkg)
-						addonHandler.installAddon(bundle)
-						return
-				except Exception as ex:
-					log.debug(f"{self.addon_name} updater internal install error: {ex}")
-				try:
-					os.startfile(target_pkg)
+					except Exception:
+						pass
+
+					prev_addon = None
+					if hasattr(addonHandler, "getAvailableAddons"):
+						for a in addonHandler.getAvailableAddons():
+							if getattr(a, "name", None) == self.addon_name:
+								prev_addon = a
+								break
+
+					addon_obj = addonHandler.installAddonBundle(bundle)
+					install_errors = getattr(bundle, "_installExceptions", None)
+					if addon_obj is None or install_errors:
+						raise RuntimeError(f"Instalacja pakietu nie powiodła się: {install_errors or 'brak obiektu dodatku'}")
+
+					if prev_addon is not None and not getattr(prev_addon, "isPendingRemove", False):
+						prev_addon.requestRemove()
+
+					try:
+						import core
+						res = gui.messageBox(
+							f"Aktualizacja dodatku {self.addon_title} została pomyślnie zainstalowana.\nCzy chcesz teraz ponownie uruchomić NVDA, aby zastosować zmiany?",
+							f"Zainstalowano aktualizację: {self.addon_title}",
+							wx.YES_NO | wx.ICON_QUESTION
+						)
+						if res == wx.YES:
+							core.restart()
+					except Exception:
+						pass
 				except Exception as ex2:
-					gui.messageBox(f"Nie udało się uruchomić instalatora:\n{ex2}", "Błąd instalacji", wx.OK | wx.ICON_ERROR)
+					log.error(f"{self.addon_name} updater internal install error: {ex2}")
+					gui.messageBox(f"Nie udało się zainstalować aktualizacji dodatku:\n{ex2}", "Błąd instalacji", wx.OK | wx.ICON_ERROR)
 
 			wx.CallAfter(_do_install)
 		except Exception as ex:
-			wx.CallAfter(gui.messageBox, f"Nie udało się pobrać aktualizacji:\n{ex}", f"Błąd aktualizacji: {self.addon_title}", wx.OK | wx.ICON_ERROR)
+			wx.CallAfter(gui.messageBox, f"Nie udało się pobrać lub zweryfikować aktualizacji:\n{ex}", f"Błąd aktualizacji: {self.addon_title}", wx.OK | wx.ICON_ERROR)
 
 
 # ==============================================================================
@@ -895,7 +989,7 @@ class DocListNavigatorSettingsPanel(SettingsPanel):
 		self.txtUpdateSource = sHelper.addLabeledControl(
 			"&Lokalizacja pliku ogłoszeniowego (ścieżka na dysku lub URL):",
 			wx.TextCtrl,
-			value=conf.get("updateSourceUrl", r"G:\Mój dysk\Antigravity\Nvda dodatki\updates.json")
+			value=conf.get("updateSourceUrl", DEFAULT_UPDATE_SOURCE_URL)
 		)
 
 		# 5. Przyciski akcji
@@ -923,6 +1017,13 @@ class DocListNavigatorSettingsPanel(SettingsPanel):
 			addon_dir=ADDON_DIR,
 			config_section=CONFIG_SECTION
 		)
+		try:
+			if hasattr(self, "txtUpdateSource") and self.txtUpdateSource is not None:
+				current_url = (self.txtUpdateSource.GetValue() or "").strip()
+				if current_url:
+					updater.override_source_url = current_url
+		except Exception:
+			pass
 		updater.check_for_updates(manual=True)
 
 	def onTestSpeech(self, event):
@@ -968,6 +1069,9 @@ class DocListNavigatorSettingsPanel(SettingsPanel):
 # ==============================================================================
 
 _orig_speak = None
+_orig_manager_speak = None
+_orig_speak_spelling = None
+_orig_cursor_set_selection = None
 
 
 class GlobalPlugin(globalPluginHandler.GlobalPlugin):
@@ -1010,24 +1114,82 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._last_announced_level = -1
 		self._last_speech_time = 0
 		self._last_breadcrumb_press = 0
+		self._in_spelling_mode = 0
+		self._filter_registered = False
+		self._startup_update_timer = None
 
 		# Szybka pamięć podręczna (cache) struktury dokumentu Worda
 		self._word_cache_items = []
 		self._word_cache_doc = ""
+		self._word_cache_key = None
 		self._word_cache_time = 0.0
 
 		# Rejestracja panelu ustawień
 		gui.settingsDialogs.NVDASettingsDialog.categoryClasses.append(DocListNavigatorSettingsPanel)
 
-		# Przechwytywanie potoku mowy dla cyfr rzymskich
-		global _orig_speak
+		# Przechwytywanie potoku mowy dla cyfr rzymskich (w tym SayAll i ochrona literowania — R01, R02)
+		global _orig_speak, _orig_manager_speak, _orig_speak_spelling, _orig_cursor_set_selection
+		try:
+			if hasattr(speech, "extensions") and hasattr(speech.extensions, "filter_speechSequence"):
+				speech.extensions.filter_speechSequence.register(self._filter_speech_sequence)
+				self._filter_registered = True
+		except Exception as ex:
+			log.debug(f"docListNavigator: rejestracja filter_speechSequence nie powiodła się: {ex}")
+
 		if _orig_speak is None:
 			if hasattr(speech, "speech") and hasattr(speech.speech, "speak"):
 				_orig_speak = speech.speech.speak
 				speech.speech.speak = self._custom_speak
-			elif hasattr(speech, "speak"):
-				_orig_speak = speech.speak
+			if hasattr(speech, "speak"):
+				if _orig_speak is None:
+					_orig_speak = speech.speak
 				speech.speak = self._custom_speak
+
+		try:
+			if _orig_manager_speak is None and hasattr(speech, "speech") and hasattr(speech.speech, "_manager"):
+				mgr = getattr(speech.speech, "_manager", None)
+				if mgr is not None and hasattr(mgr, "speak"):
+					_orig_manager_speak = mgr.speak
+					mgr.speak = self._custom_manager_speak
+		except Exception:
+			pass
+
+		try:
+			if hasattr(speech, "sayAll") and getattr(speech.sayAll, "SayAllHandler", None) is not None:
+				sah = speech.sayAll.SayAllHandler
+				swp = getattr(sah, "_speechWithoutPausesInstance", None)
+				if swp is not None and hasattr(swp, "speak"):
+					swp.speak = self._custom_speak
+		except Exception:
+			pass
+
+		if _orig_speak_spelling is None:
+			if hasattr(speech, "speech") and hasattr(speech.speech, "speakSpelling"):
+				_orig_speak_spelling = speech.speech.speakSpelling
+				speech.speech.speakSpelling = self._custom_speak_spelling
+			if hasattr(speech, "speakSpelling"):
+				if _orig_speak_spelling is None:
+					_orig_speak_spelling = speech.speakSpelling
+				speech.speakSpelling = self._custom_speak_spelling
+
+		# Śledzenie ruchu wirtualnego kursora w PDF / BrowseMode (R07)
+		try:
+			import cursorManager
+			if _orig_cursor_set_selection is None and hasattr(cursorManager, "CursorManager"):
+				_orig_cursor_set_selection = cursorManager.CursorManager._set_selection
+				plugin_ref = self
+
+				def _hooked_set_selection(cm_self, info, *args, **kwargs):
+					res = _orig_cursor_set_selection(cm_self, info, *args, **kwargs)
+					try:
+						plugin_ref._on_virtual_selection_changed(cm_self, info)
+					except Exception:
+						pass
+					return res
+
+				cursorManager.CursorManager._set_selection = _hooked_set_selection
+		except Exception as ex:
+			log.debug(f"docListNavigator: hook CursorManager._set_selection error: {ex}")
 
 		# Inicjalizacja modułu aktualizacji i opóźnione sprawdzenie w tle
 		self._updater = AddonUpdaterEngine(
@@ -1037,7 +1199,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			addon_dir=ADDON_DIR,
 			config_section=CONFIG_SECTION
 		)
-		wx.CallLater(12000, self._check_updates_auto)
+		try:
+			self._startup_update_timer = wx.CallLater(12000, self._check_updates_auto)
+		except Exception:
+			pass
 
 		log.info(f"docListNavigator v{ADDON_VERSION}: Dodatek pomyślnie załadowany i zainicjalizowany.")
 
@@ -1051,13 +1216,58 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		self._updater.check_for_updates(manual=False)
 
 	def terminate(self):
-		global _orig_speak
+		global _orig_speak, _orig_manager_speak, _orig_speak_spelling, _orig_cursor_set_selection
+		try:
+			if getattr(self, "_startup_update_timer", None) is not None:
+				self._startup_update_timer.Stop()
+				self._startup_update_timer = None
+		except Exception:
+			pass
+
+		try:
+			if getattr(self, "_filter_registered", False) and hasattr(speech, "extensions") and hasattr(speech.extensions, "filter_speechSequence"):
+				speech.extensions.filter_speechSequence.unregister(self._filter_speech_sequence)
+				self._filter_registered = False
+		except Exception:
+			pass
+
 		if _orig_speak is not None:
 			if hasattr(speech, "speech") and hasattr(speech.speech, "speak"):
 				speech.speech.speak = _orig_speak
 			if hasattr(speech, "speak"):
 				speech.speak = _orig_speak
+			try:
+				if hasattr(speech, "sayAll") and getattr(speech.sayAll, "SayAllHandler", None) is not None:
+					swp = getattr(speech.sayAll.SayAllHandler, "_speechWithoutPausesInstance", None)
+					if swp is not None and hasattr(swp, "speak"):
+						swp.speak = _orig_speak
+			except Exception:
+				pass
 			_orig_speak = None
+
+		if _orig_manager_speak is not None:
+			try:
+				if hasattr(speech, "speech") and hasattr(speech.speech, "_manager"):
+					speech.speech._manager.speak = _orig_manager_speak
+			except Exception:
+				pass
+			_orig_manager_speak = None
+
+		if _orig_speak_spelling is not None:
+			if hasattr(speech, "speech") and hasattr(speech.speech, "speakSpelling"):
+				speech.speech.speakSpelling = _orig_speak_spelling
+			if hasattr(speech, "speakSpelling"):
+				speech.speakSpelling = _orig_speak_spelling
+			_orig_speak_spelling = None
+
+		if _orig_cursor_set_selection is not None:
+			try:
+				import cursorManager
+				if hasattr(cursorManager, "CursorManager"):
+					cursorManager.CursorManager._set_selection = _orig_cursor_set_selection
+			except Exception:
+				pass
+			_orig_cursor_set_selection = None
 
 		try:
 			gui.settingsDialogs.NVDASettingsDialog.categoryClasses.remove(DocListNavigatorSettingsPanel)
@@ -1102,26 +1312,61 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		"""Sprawdza, czy aktywną aplikacją jest MS Word lub Adobe Acrobat Reader."""
 		return self._is_word_active() or self._is_acrobat_active()
 
+	def _filter_speech_sequence(self, speechSequence, *args, **kwargs):
+		"""
+		Wspólny filtr sekwencji mowy dla wszystkich ścieżek odczytu (w tym SayAll),
+		chroniący tryb literowania i odczyt pojedynczych znaków (R01, R02).
+		"""
+		if getattr(self, "_in_spelling_mode", 0) > 0:
+			return speechSequence
+
+		conf = config.conf.get(CONFIG_SECTION, {})
+		if not conf.get("enableRomanNumerals", True):
+			return speechSequence
+
+		scope = conf.get("romanNumeralsScope", "targetApps")
+		should_transform = (scope == "global") or self._is_target_application_active()
+		if not should_transform or not speechSequence:
+			return speechSequence
+
+		newSeq = []
+		in_char_mode = False
+		for item in speechSequence:
+			if isinstance(item, str):
+				if in_char_mode or len(item.strip()) <= 1:
+					newSeq.append(item)
+				else:
+					newSeq.append(transform_roman_text(item))
+			else:
+				state_val = getattr(item, "state", None)
+				if type(item).__name__ == "CharacterModeCommand" or isinstance(state_val, bool):
+					in_char_mode = bool(state_val)
+				newSeq.append(item)
+		return newSeq
+
 	def _custom_speak(self, speechSequence, *args, **kwargs):
 		"""
 		Filtruje sekwencję mowy, zamieniając cyfry rzymskie na postać 'rzymskie <liczba>'
 		zgodnie z konfiguracją użytkownika.
 		"""
-		conf = config.conf.get(CONFIG_SECTION, {})
-		if conf.get("enableRomanNumerals", True):
-			scope = conf.get("romanNumeralsScope", "targetApps")
-			should_transform = (scope == "global") or self._is_target_application_active()
+		speechSequence = self._filter_speech_sequence(speechSequence)
+		if _orig_speak is not None:
+			return _orig_speak(speechSequence, *args, **kwargs)
+		return None
 
-			if should_transform and speechSequence:
-				newSeq = []
-				for item in speechSequence:
-					if isinstance(item, str):
-						newSeq.append(transform_roman_text(item))
-					else:
-						newSeq.append(item)
-				speechSequence = newSeq
+	def _custom_manager_speak(self, speechSequence, *args, **kwargs):
+		speechSequence = self._filter_speech_sequence(speechSequence)
+		if _orig_manager_speak is not None:
+			return _orig_manager_speak(speechSequence, *args, **kwargs)
+		return None
 
-		return _orig_speak(speechSequence, *args, **kwargs)
+	def _custom_speak_spelling(self, *args, **kwargs):
+		self._in_spelling_mode = getattr(self, "_in_spelling_mode", 0) + 1
+		try:
+			if _orig_speak_spelling is not None:
+				return _orig_speak_spelling(*args, **kwargs)
+		finally:
+			self._in_spelling_mode = max(0, getattr(self, "_in_spelling_mode", 1) - 1)
 
 	# --------------------------------------------------------------------------
 	# ODGŁOSY DŹWIĘKOWE (TONES)
@@ -1189,9 +1434,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				return app, doc, sel
 			curr = getattr(curr, "parent", None)
 
-		# Metoda 2: AccessibleObjectFromWindow na oknie _WwG
+		# Metoda 2: AccessibleObjectFromWindow na oknie _WwG (R17, R18)
 		try:
+			import ctypes
+			from ctypes import wintypes
 			import oleacc
+			import comtypes.automation
 			import comtypes.client.dynamic
 			import winUser
 
@@ -1202,6 +1450,12 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			if fg and fg not in hwnds_to_check:
 				hwnds_to_check.append(fg)
 
+			WNDENUMPROC = (
+				getattr(winUser, "WNDENUMPROC", None)
+				or getattr(winUser, "_WNDENUMPROC", None)
+				or ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+			)
+
 			def _enum_child_proc(h, l):
 				try:
 					cls_name = winUser.getClassName(h).lower()
@@ -1211,9 +1465,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 					pass
 				return True
 
+			enum_cb = WNDENUMPROC(_enum_child_proc)
+			user32_mod = getattr(winUser, "user32", None) or ctypes.windll.user32
 			for ph in list(hwnds_to_check):
 				try:
-					winUser.user32.EnumChildWindows(ph, winUser.WNDENUMPROC(_enum_child_proc), 0)
+					user32_mod.EnumChildWindows(ph, enum_cb, 0)
 				except Exception:
 					pass
 
@@ -1221,7 +1477,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				try:
 					cls_name = winUser.getClassName(h).lower()
 					if "_ww" in cls_name:
-						pacc = oleacc.AccessibleObjectFromWindow(h, -16)
+						pacc = oleacc.AccessibleObjectFromWindow(h, -16, interface=comtypes.automation.IDispatch)
 						if pacc:
 							win_obj = comtypes.client.dynamic.Dispatch(pacc)
 							app = getattr(win_obj, "application", None) or getattr(win_obj, "Application", None)
@@ -1252,14 +1508,56 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 
 		return None, None, None
 
+	def _compute_word_cache_key(self, doc, doc_id: str, content_end: int):
+		"""Buduje odcisk dokumentu uwzględniający treść i formatowanie list/nagłówków (R04)."""
+		content_text = ""
+		try:
+			content_rng = getattr(doc, "Content", None)
+			if content_rng is not None:
+				content_text = str(getattr(content_rng, "Text", "") or "")
+		except Exception:
+			pass
+
+		para_sig = []
+		try:
+			paragraphs = getattr(doc, "Paragraphs", None)
+			p_count = int(getattr(paragraphs, "Count", 0) or 0)
+			if p_count > 0 and hasattr(paragraphs, "__getitem__"):
+				sample_indices = list(range(min(p_count, 32)))
+				if p_count > 32:
+					sample_indices.extend(range(max(32, p_count - 32), p_count))
+				for idx in sample_indices:
+					try:
+						p = paragraphs[idx]
+					except Exception:
+						try:
+							p = paragraphs[idx + 1]
+						except Exception:
+							continue
+					rng = getattr(p, "Range", None)
+					if rng is None:
+						continue
+					lf = getattr(rng, "ListFormat", None)
+					para_sig.append((
+						str(getattr(rng, "Text", "") or ""),
+						int(getattr(p, "OutlineLevel", 10) or 10),
+						float(getattr(p, "LeftIndent", 0.0) or 0.0),
+						int(getattr(lf, "ListType", 0) or 0) if lf is not None else 0,
+						str(getattr(lf, "ListString", "") or "") if lf is not None else "",
+						int(getattr(lf, "ListLevelNumber", -1) or -1) if lf is not None else -1,
+					))
+		except Exception:
+			pass
+
+		return (doc_id, content_end, content_text, tuple(para_sig))
+
 	def _collect_word_document_items(self, word_app, doc, sel) -> tuple[list[DocumentItem], int]:
 		"""
-		Błyskawicznie (w kilka milisekund) pobiera strukturę dokumentu z Worda.
-		Wykorzystuje jednorazowy odczyt tekstu (doc.Content.Text) oraz pamięć podręczną (cache),
-		co całkowicie eliminuje opóźnienia i zawieszanie NVDA.
+		Pobiera strukturę dokumentu z Worda z pełnymi metadanymi list i nagłówków
+		oraz bezpiecznym fallbackiem tekstowym (R03, R04, R05, R09).
 		"""
 		items = []
-		cur_idx = 0
+		cur_idx = -1
 		if not doc and word_app:
 			try:
 				doc = word_app.ActiveDocument
@@ -1286,18 +1584,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		except Exception:
 			pass
 
-		cache_key = (doc_id, content_end)
+		cache_key = self._compute_word_cache_key(doc, doc_id, content_end)
 
-		# 1. Sprawdź pamięć podręczną (cache) — jeśli ten sam dokument, brak zmian długości/treści i upłynęło < 30 s
+		# 1. Sprawdź pamięć podręczną (cache) — jeśli ten sam dokument, brak zmian treści/formatowania i upłynęło < 30 s
 		if self._word_cache_items and getattr(self, "_word_cache_key", None) == cache_key and (now - self._word_cache_time) < 30.0:
 			items = self._word_cache_items
 		else:
-			# 2. Pobieranie akapitów Worda z metadanymi (listy natywne, style, wcięcia)
+			# 2. Pobieranie akapitów Worda z metadanymi (listy natywne, style, wcięcia) — bez sztucznego limitu 2500 (R03)
 			used_paragraphs = False
 			try:
 				paragraphs = doc.Paragraphs
 				p_count = paragraphs.Count
-				if 0 < p_count <= 2500:
+				if p_count > 0:
 					for p in paragraphs:
 						rng = p.Range
 						txt = str(rng.Text or "").strip()
@@ -1348,15 +1646,18 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 								raw_obj=None,
 								range_start=p_start,
 								range_end=p_end,
-								app_source="word"
+								app_source="word",
+								list_level=list_level
 							))
 					used_paragraphs = True
 			except Exception as ex:
 				log.debug(f"docListNavigator: błąd odczytu doc.Paragraphs: {ex}")
+				items = []
 				used_paragraphs = False
 
 			if not used_paragraphs:
-				# Błyskawiczny fallback na cały tekst dokumentu
+				# Odrzucamy częściowy wynik i stosujemy fallback na cały tekst dokumentu (R05)
+				items = []
 				full_text = ""
 				try:
 					content_rng = doc.Content
@@ -1396,7 +1697,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			self._word_cache_key = cache_key
 			self._word_cache_time = now
 
-		# 3. Wyznaczenie indeksu bieżącego elementu na podstawie aktualnej pozycji kursora
+		# 3. Wyznaczenie indeksu bieżącego elementu na podstawie aktualnej pozycji kursora (R09: -1 przed pierwszym elementem)
 		if items and cur_para_start != -1:
 			for i, it in enumerate(items):
 				if it.range_start <= cur_para_start < it.range_end:
@@ -1416,11 +1717,11 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _collect_acrobat_document_items(self, focus_obj) -> tuple[list[DocumentItem], int]:
 		"""Pobiera logiczne punkty z wirtualnego bufora Adobe Acrobat."""
 		items = []
-		cur_idx = 0
+		cur_idx = -1
 		try:
 			ti = getattr(focus_obj, "treeInterceptor", None)
 			if not ti:
-				return items, 0
+				return items, -1
 
 			caret_info = ti.makeTextInfo(textInfos.POSITION_CARET)
 			all_info = ti.makeTextInfo(textInfos.POSITION_FIRST)
@@ -1461,7 +1762,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		return items, cur_idx
 
 	def _build_item_hierarchy(self, items: list[DocumentItem]):
-		"""Buduje relacje rodzic-dziecko na podstawie poziomów logicznych oraz numeruje punkty i tirety."""
+		"""Buduje relacje rodzic-dziecko na podstawie poziomów logicznych oraz numeruje punkty i tirety (R20, R22, R23)."""
 		stack = []  # stos (level, index)
 		for it in items:
 			while stack and stack[-1][0] >= it.level:
@@ -1472,12 +1773,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				items[parent_idx].children_indices.append(it.index)
 			stack.append((it.level, it.index))
 
-		# Numeracja porządkowa dzieci (ustęp, pkt, litera, tiret)
-		for it in items:
-			if not it.children_indices:
-				continue
+		def _assign_sibling_markers(sibling_indices: list[int]):
 			level_counts = {}
-			for ch_idx in it.children_indices:
+			for ch_idx in sibling_indices:
 				ch = items[ch_idx]
 				cnt = level_counts.get(ch.level, 0) + 1
 				level_counts[ch.level] = cnt
@@ -1487,16 +1785,26 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 				if ch.level == LogicalLevel.TIRET:
 					word = TIRET_ORDINALS_PL.get(cnt, f"{cnt}.")
 					ch.marker = f"tiret {word}"
-				# Jeśli to litera bez jednoznacznego znacznika w tekście (np. Zadanie):
+				# Jeśli to litera bez jednoznacznego znacznika w tekście (np. Zadanie) — obsługuje >26 elementów (R23):
 				elif ch.level == LogicalLevel.LITERA and (not ch.marker or ch.marker == "litera"):
-					let_char = chr(ord('a') + min(cnt - 1, 25))
-					ch.marker = f"litera {let_char})"
+					let_seq = _index_to_letters(cnt - 1)
+					ch.marker = f"litera {let_seq})"
 				# Jeśli to punkt bez jednoznacznego znacznika w tekście (np. Obszar):
 				elif ch.level == LogicalLevel.PUNKT and (not ch.marker or ch.marker == "pkt"):
 					ch.marker = f"pkt {cnt})"
 				# Jeśli to ustęp bez jednoznacznego znacznika w tekście (np. Moduł):
 				elif ch.level == LogicalLevel.USTEP and (not ch.marker or ch.marker == "ustęp"):
 					ch.marker = f"ustęp {cnt}."
+
+		# 1. Numeracja porządkowa elementów głównych bez rodzica (R20)
+		root_indices = [it.index for it in items if it.parent_index == -1]
+		if root_indices:
+			_assign_sibling_markers(root_indices)
+
+		# 2. Numeracja porządkowa dzieci dla każdego elementu nadrzędnego
+		for it in items:
+			if it.children_indices:
+				_assign_sibling_markers(it.children_indices)
 
 	# --------------------------------------------------------------------------
 	# NAWIGACJA I SKOKI DO ELEMENTÓW
@@ -1505,14 +1813,33 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 	def _jump_to_item(self, item: DocumentItem):
 		"""Przenosi kursor w aplikacji do wskazanego akapitu."""
 		try:
-			# Adobe Acrobat Reader / wirtualny bufor
+			# Adobe Acrobat Reader / wirtualny bufor — synchronizacja przez selekcję treeInterceptora (R06)
 			if getattr(item, "app_source", "") == "acrobat" or hasattr(item.raw_obj, "updateCaret"):
-				if hasattr(item.raw_obj, "updateCaret"):
-					item.raw_obj.updateCaret()
+				if item.raw_obj is not None:
+					caret_info = item.raw_obj.copy() if hasattr(item.raw_obj, "copy") else item.raw_obj
+					if hasattr(caret_info, "collapse"):
+						try:
+							caret_info.collapse()
+						except Exception:
+							pass
 					focus = api.getFocusObject()
-					ti = getattr(focus, "treeInterceptor", None)
-					if ti:
-						speech.speakTextInfo(item.raw_obj, reason=controlTypes.OutputReason.CARET)
+					ti = getattr(caret_info, "obj", None) or getattr(focus, "treeInterceptor", None)
+					if ti is not None and hasattr(ti, "_set_selection"):
+						ti._set_selection(caret_info)
+					elif ti is not None and hasattr(ti, "selection"):
+						try:
+							ti.selection = caret_info
+						except Exception:
+							if hasattr(caret_info, "updateCaret"):
+								caret_info.updateCaret()
+					elif hasattr(caret_info, "updateCaret"):
+						caret_info.updateCaret()
+
+					if ti is not None:
+						try:
+							speech.speakTextInfo(item.raw_obj, reason=controlTypes.OutputReason.CARET)
+						except Exception:
+							pass
 					ui.message(item.display_label)
 					return
 
@@ -1557,7 +1884,7 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		elif self._is_acrobat_active():
 			focus = api.getFocusObject()
 			return self._collect_acrobat_document_items(focus)
-		return [], 0
+		return [], -1
 
 	# --------------------------------------------------------------------------
 	# SKRYPTY GESTÓW (SKRÓTY KLAWISZOWE)
@@ -1575,6 +1902,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		items, cur_idx = self._get_document_items_and_cur_idx()
 		if not items or cur_idx >= len(items):
 			ui.message("W bieżącym dokumencie nie wykryto elementów list ani nagłówków.")
+			return
+		if cur_idx < 0:
+			ui.message("Kursor znajduje się przed pierwszym punktem lub nagłówkiem dokumentu.")
 			return
 
 		path_items = []
@@ -1638,6 +1968,15 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			ui.message("W bieżącym dokumencie nie wykryto elementów list ani nagłówków.")
 			return
 
+		if cur_idx < 0:
+			if direction > 0:
+				self._play_nav_tone("same")
+				self._jump_to_item(items[0])
+			else:
+				self._play_nav_tone("boundary")
+				ui.message("Kursor znajduje się przed pierwszym punktem dokumentu.")
+			return
+
 		cur_item = items[cur_idx]
 		target = None
 
@@ -1679,6 +2018,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		if not items:
 			ui.message("W bieżącym dokumencie nie wykryto elementów list ani nagłówków.")
 			return
+		if cur_idx < 0:
+			self._play_nav_tone("boundary")
+			ui.message("Kursor znajduje się przed pierwszym punktem dokumentu — brak elementu nadrzędnego.")
+			return
 
 		cur_item = items[cur_idx]
 		if cur_item.parent_index != -1 and cur_item.parent_index < len(items):
@@ -1701,6 +2044,10 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		items, cur_idx = self._get_document_items_and_cur_idx()
 		if not items:
 			ui.message("W bieżącym dokumencie nie wykryto elementów list ani nagłówków.")
+			return
+		if cur_idx < 0:
+			self._play_nav_tone("boundary")
+			ui.message("Kursor znajduje się przed pierwszym punktem dokumentu.")
 			return
 
 		cur_item = items[cur_idx]
@@ -1797,8 +2144,136 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 		ui.browseableMessage(help_text, "Pomoc: Nawigator list i cyfr rzymskich")
 
 	# --------------------------------------------------------------------------
-	# ŚLEDZENIE ZMIANY POZIOMU PRZY NORMALNYM RUCHU STRZAŁKAMI
+	# ŚLEDZENIE ZMIANY POZIOMU PRZY NORMALNYM RUCHU STRZAŁKAMI (R07, R08)
 	# --------------------------------------------------------------------------
+
+	def _extract_paragraph_metadata(self, obj, info) -> tuple[float, int, int, str, int]:
+		"""Pobiera metadane natywnej listy i stylu akapitu z TextInfo, obiektu NVDA lub COM Worda (R08)."""
+		left_indent = 0.0
+		outline_lvl = 10
+		list_level = -1
+		list_string = ""
+		list_type = 0
+
+		rng = (
+			getattr(info, "_rangeObj", None)
+			or getattr(info, "Range", None)
+			or getattr(info, "rangeObj", None)
+		)
+		if rng is None and hasattr(info, "ListFormat"):
+			rng = info
+		if rng is None and obj is not None:
+			sel_obj = getattr(obj, "WinwordSelectionObject", None)
+			if sel_obj is not None:
+				rng = getattr(sel_obj, "Range", None)
+			if rng is None and hasattr(obj, "ListFormat"):
+				rng = obj
+		if rng is None:
+			try:
+				if hasattr(self, "_get_word_objects"):
+					_, _, sel_obj = self._get_word_objects()
+					if sel_obj is not None:
+						rng = getattr(sel_obj, "Range", None)
+			except Exception:
+				pass
+
+		for src in (rng, info, obj):
+			if src is None:
+				continue
+			if list_type == 0:
+				try:
+					lf = getattr(src, "ListFormat", None)
+					if lf is not None:
+						lt = int(getattr(lf, "ListType", 0) or 0)
+						if lt > 0:
+							list_type = lt
+							list_string = str(getattr(lf, "ListString", "") or "")
+							list_level = int(getattr(lf, "ListLevelNumber", -1) or -1)
+				except Exception:
+					pass
+
+			p_src = src
+			try:
+				paras = getattr(src, "Paragraphs", None)
+				if paras is not None:
+					if hasattr(paras, "__getitem__"):
+						try:
+							p_src = paras[0]
+						except Exception:
+							p_src = paras[1]
+					elif callable(paras):
+						p_src = paras(1)
+			except Exception:
+				pass
+
+			if outline_lvl == 10:
+				try:
+					ol = getattr(p_src, "OutlineLevel", None)
+					if ol is not None:
+						outline_lvl = int(ol)
+				except Exception:
+					pass
+			if left_indent == 0.0:
+				try:
+					li = getattr(p_src, "LeftIndent", None)
+					if li is not None:
+						left_indent = float(li)
+				except Exception:
+					pass
+
+		return left_indent, outline_lvl, list_level, list_string, list_type
+
+	def _announce_level_for_info(self, obj, info):
+		conf = config.conf.get(CONFIG_SECTION, {})
+		if not conf.get("autoAnnounceLevel", True) or not self._is_target_application_active():
+			return
+
+		p_info = info.copy() if hasattr(info, "copy") else info
+		if hasattr(p_info, "expand"):
+			p_info.expand(textInfos.UNIT_PARAGRAPH)
+		txt = (getattr(p_info, "text", "") or "").strip()
+		left_indent, outline_lvl, list_level, list_string, list_type = self._extract_paragraph_metadata(obj, p_info)
+
+		if not txt and not list_string:
+			return
+
+		lvl, marker = classify_paragraph(
+			txt,
+			left_indent_pt=left_indent,
+			outline_level=outline_lvl,
+			list_level=list_level,
+			list_string=list_string,
+			list_type=list_type
+		)
+
+		if lvl != LogicalLevel.BODY and lvl != self._last_announced_level:
+			prev_lvl = self._last_announced_level
+			self._last_announced_level = lvl
+			mode = conf.get("levelAnnouncementMode", "both")
+
+			if mode in ("tone", "both"):
+				if prev_lvl != -1 and lvl > prev_lvl:
+					self._play_nav_tone("deeper")
+				elif prev_lvl != -1 and lvl < prev_lvl:
+					self._play_nav_tone("higher")
+				else:
+					self._play_nav_tone("same")
+
+			if mode in ("speech", "both"):
+				if marker:
+					ui.message(marker)
+				else:
+					lvl_name = LEVEL_SHORT_NAMES.get(lvl, "")
+					ui.message(lvl_name)
+
+	def _on_virtual_selection_changed(self, cm_obj, info):
+		"""Obsługuje ruch wirtualnego kursora w trybie przeglądania PDF (R07)."""
+		if info is None:
+			try:
+				info = cm_obj.makeTextInfo(textInfos.POSITION_CARET)
+			except Exception:
+				return
+		self._announce_level_for_info(cm_obj, info)
 
 	def event_caret(self, obj, nextHandler):
 		nextHandler()
@@ -1807,34 +2282,9 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
 			return
 
 		try:
-			info = obj.makeTextInfo(textInfos.POSITION_CARET)
-			info.expand(textInfos.UNIT_PARAGRAPH)
-			txt = (info.text or "").strip()
-			if not txt:
-				return
-
-			lvl, marker = classify_paragraph(txt)
-			if lvl != LogicalLevel.BODY and lvl != self._last_announced_level:
-				prev_lvl = self._last_announced_level
-				self._last_announced_level = lvl
-				mode = conf.get("levelAnnouncementMode", "both")
-
-				# Odgłos dźwiękowy
-				if mode in ("tone", "both"):
-					if prev_lvl != -1 and lvl > prev_lvl:
-						self._play_nav_tone("deeper")
-					elif prev_lvl != -1 and lvl < prev_lvl:
-						self._play_nav_tone("higher")
-					else:
-						self._play_nav_tone("same")
-
-				# Komunikat mowy
-				if mode in ("speech", "both"):
-					if marker:
-						ui.message(marker)
-					else:
-						lvl_name = LEVEL_SHORT_NAMES.get(lvl, "")
-						ui.message(lvl_name)
-
+			ti = getattr(obj, "treeInterceptor", None)
+			target_provider = ti if (ti is not None and hasattr(ti, "makeTextInfo")) else obj
+			info = target_provider.makeTextInfo(textInfos.POSITION_CARET)
+			self._announce_level_for_info(obj, info)
 		except Exception:
 			pass

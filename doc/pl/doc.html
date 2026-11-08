@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<title>Nawigator list i cyfr rzymskich dla Word i Acrobat — Podręcznik użytkownika</title>
+<style>
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    line-height: 1.6;
+    max-width: 900px;
+    margin: 20px auto;
+    padding: 0 20px;
+    color: #212529;
+    background-color: #ffffff;
+}
+h1 {
+    color: #0b5ed7;
+    border-bottom: 2px solid #0b5ed7;
+    padding-bottom: 8px;
+}
+h2 {
+    color: #198754;
+    margin-top: 24px;
+    border-bottom: 1px solid #dee2e6;
+    padding-bottom: 4px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+}
+th, td {
+    padding: 10px 12px;
+    border: 1px solid #dee2e6;
+    text-align: left;
+}
+th {
+    background-color: #f8f9fa;
+    color: #000;
+}
+tr:nth-child(even) {
+    background-color: #f8f9fa;
+}
+code {
+    background-color: #e9ecef;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.95em;
+    font-weight: bold;
+}
+.tip {
+    background-color: #e7f1ff;
+    border-left: 4px solid #0d6efd;
+    padding: 12px 16px;
+    margin: 16px 0;
+}
+</style>
+</head>
+<body>
+
+<h1>Nawigator list i cyfr rzymskich dla Word i Acrobat</h1>
+<p><strong>Wersja:</strong> 1.0.7<br>
+<strong>Autor:</strong> Sławomir Strugarek z pomocą Antigravity (Google DeepMind)<br>
+<strong>Zgodność:</strong> NVDA 2024.1.0+ (przetestowano na NVDA 2026.1)</p>
+
+<h2>1. O dodatku</h2>
+<p>Dodatek <strong>Nawigator list i cyfr rzymskich</strong> rozwiązuje dwa kluczowe problemy podczas pracy z czytnikiem ekranu NVDA w dokumentach programów <strong>Microsoft Word</strong> oraz <strong>Adobe Acrobat Reader</strong>:</p>
+<ol>
+    <li><strong>Nawigacja po wielopoziomowych listach aktów prawnych, procedur i regulaminów:</strong> Pozwala na błyskawiczne poruszanie się pomiędzy punktami na tym samym poziomie (z pominięciem ich podpunktów), skakanie do elementu nadrzędnego (rodzica) lub pierwszego podpunktu (dziecka), odczytywanie pełnej ścieżki pozycji (np. <em>Rozdział VI &gt; ustęp 1 &gt; punkt 1) &gt; litera a)</em>) oraz przeglądanie całego dokumentu w dostępnym oknie drzewa ze skokiem na klawiszu Enter.</li>
+    <li><strong>Naturalna, bezbłędna wymowa cyfr rzymskich:</strong> Likwiduje problem literowania cyfr rzymskich (np. czytanie „I-I-I” zamiast „trzy”). NVDA automatycznie wypowiada oznaczenia cyfr rzymskich w sposób naturalny: <em>„rzymskie trzy”</em>, <em>„w module rzymskie dwa”</em>, <em>„Rozdział rzymskie sześć”</em>, jednocześnie w pełni chroniąc zwykłe polskie słowo „i” (np. <em>Jan i Maria</em> nie jest modyfikowane).</li>
+</ol>
+
+<h2>2. Skróty klawiszowe w Word i Acrobat</h2>
+<table>
+    <thead>
+        <tr>
+            <th scope="col">Skrót klawiszowy</th>
+            <th scope="col">Funkcja</th>
+            <th scope="col">Opis działania</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td><code>NVDA + Alt + L</code></td>
+            <td>Odczytanie ścieżki hierarchicznej</td>
+            <td>Podaje pełną hierarchię punktu, np. <em>Rozdział VI &gt; ustęp 1 &gt; punkt 2 &gt; litera a</em>. <strong>Dwukrotne szybkie wciśnięcie</strong> kopiuje całą ścieżkę i treść punktu do schowka Windows.</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Alt + Strzałka w dół</code></td>
+            <td>Następny punkt na tym samym poziomie</td>
+            <td>Skacze do kolejnego punktu na tym samym poziomie logicznym (np. z punktu <code>1)</code> od razu do <code>2)</code>, pomijając wszystkie podpunkty literowe <code>a)</code>, <code>b)</code>).</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Alt + Strzałka w górę</code></td>
+            <td>Poprzedni punkt na tym samym poziomie</td>
+            <td>Skacze do poprzedniego punktu na tym samym poziomie logicznym.</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Alt + Strzałka w lewo</code></td>
+            <td>Element nadrzędny (poziom wyżej)</td>
+            <td>Przenosi kursor do rodzica bieżącej pozycji (np. z litery <code>a)</code> wraca do punktu <code>1)</code>, z punktu do ustępu).</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Alt + Strzałka w prawo</code></td>
+            <td>Pierwszy podpunkt (poziom niżej)</td>
+            <td>Przenosi kursor do pierwszego dziecka/podpunktu (np. z punktu <code>1)</code> wchodzi do litery <code>a)</code>).</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Alt + F7</code></td>
+            <td>Drzewo struktury dokumentu</td>
+            <td>Otwiera w pełni dostępne okno dialogowe z listą wszystkich punktów i nagłówków. Zawiera natychmiastową wyszukiwarkę. Naciśnięcie <code>Enter</code> przenosi kursor wprost do wybranego punktu.</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Ctrl + Shift + L</code></td>
+            <td>Włącznik ogłaszania poziomów</td>
+            <td>Przełącza automatyczną sygnalizację (mową lub dźwiękiem) zmiany poziomu przy normalnym czytaniu strzałkami w górę/w dół.</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Ctrl + Shift + R</code></td>
+            <td>Włącznik wymowy cyfr rzymskich</td>
+            <td>Szybko włącza lub wyłącza silnik wymowy cyfr rzymskich.</td>
+        </tr>
+        <tr>
+            <td><code>NVDA + Ctrl + Shift + H</code></td>
+            <td>Podręczna pomoc</td>
+            <td>Wyświetla skrócone podsumowanie klawiszy w buforze przeglądania NVDA.</td>
+        </tr>
+        <tr>
+            <td><code>F1</code></td>
+            <td>Pomoc kontekstowa</td>
+            <td>Wyświetla kontekstowe wskazówki w otwartych oknach dialogowych dodatku.</td>
+        </tr>
+    </tbody>
+</table>
+
+<div class="tip">
+    <strong>Wskazówka:</strong> Wszystkie powyższe skróty można dowolnie dostosować lub zmienić w menu <em>NVDA &gt; Preferencje &gt; Zdarzenia wejścia &gt; Kategoria: Nawigator list i cyfr rzymskich</em>.
+</div>
+
+<h2>3. Ustawienia dodatku</h2>
+<p>Panel konfiguracyjny dostępny jest w menu <em>NVDA &gt; Preferencje &gt; Ustawienia &gt; Kategoria: Nawigator list i cyfr rzymskich</em>. Umożliwia:</p>
+<ul>
+    <li>Włączenie/wyłączenie naturalnej wymowy cyfr rzymskich.</li>
+    <li>Wybór zakresu działania (tylko w Word i Acrobat Reader lub globalnie we wszystkich aplikacjach).</li>
+    <li>Wybór sposobu sygnalizowania zmiany poziomu (mowa, dyskretny dźwięk lub oba naraz).</li>
+    <li>Regulację głośności sygnałów dźwiękowych (od 0% do 100%).</li>
+    <li>Przetestowanie działania wymowy przyciskiem próbnym.</li>
+</ul>
+
+</body>
+</html>

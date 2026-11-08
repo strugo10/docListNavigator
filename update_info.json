@@ -1,7 +1,7 @@
 {
   "name": "docListNavigator",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "downloadUrl": "https://github.com/strugo10/docListNavigator/releases/latest/download/docListNavigator.nvda-addon",
-  "changelog": "Wersja 1.0.5:\n• Poprawki gramatyczne i detekcji rzymskich cyfr: ochrona polskiego spójnika 'i' oraz wsparcie dla znaków 'X' i 'L'.\n• Precyzyjne odczytywanie numerów rozdziałów.\n• Stabilna nawigacja i skakanie po akapitach w dokumentach PDF w Adobe Acrobat Reader.\n• Wyższa wydajność w Microsoft Word dzięki optymalizacji odświeżania bufora akapitów.\n• Wyeliminowanie przechwytywania skrótów poza Wordem i Acrobatem.\n• Zrównoważony dźwięk stereo w sygnalizacji poziomów nawigacji.",
+  "changelog": "Wersja 1.0.7:\n• Pełna obsługa wymowy cyfr rzymskich podczas czytania ciągłego (Czytaj wszystko / SayAll) oraz ochrona trybu literowania i pojedynczych znaków.\n• Zachowanie metadanych natywnych list i nagłówków w dużych dokumentach Worda (>2500 akapitów), natychmiastowe odświeżanie bufora po zmianie formatowania lub treści oraz ochrona przed duplikatami w trybie awaryjnym.\n• Precyzyjne rozpoznawanie zagnieżdżonych list natywnych Worda, oznaczeń 'lit. c.', '§ 5', numerowanych Obszarów i Zadań, numeracji głównych tiretów oraz wieloliterowych oznaczeń powyżej 26 podpunktów (z, aa, ab...).\n• Synchronizacja kursora przeglądania i wirtualnego bufora w dokumentach PDF (Adobe Acrobat Reader) oraz śledzenie poziomów list przy poruszaniu się strzałkami.\n• Bezpieczny instalator aktualizacji korzystający z oficjalnego API NVDA (AddonBundle / installAddonBundle) i domyślnego źródła aktualizacji.",
   "minNVDAVersion": "2024.1.0"
 }
